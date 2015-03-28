@@ -14,56 +14,45 @@ module.exports = function(app) {
     req.io.join('popular_co')
   });
 
+  var chartbeat_template = _.template("<%= chartbeat_url %>/live/toppages/v3/?limit=50&apikey=<%= api_key %>&host=")
+  var chartbeat_string = chartbeat_template({
+    chartbeat_url: config.chartbeat_url,
+    api_key: config.api_key
+  });
+
+  var urls = [];
+  _.forEach(config.sites, function(site) {
+    urls.push(chartbeat_string + site);
+  });
+
+  function parse_article(article) {
+    if (helper.isSectionPage(article.path)) return;
+
+    return {
+      path: article.path,
+      title: article.title,
+      visits: article.stats.visits
+    };
+  }
+
   function fetchData() {
+    console.log("Fetching popular data");
     if (!app.io.sockets.clients('popular_co').length) {
       setTimeout(fetchData, 5000);
       return;
     }
-    // Format the URLs
-    console.log("Fetching popular");
-    var chartbeat_template = _.template("<%= chartbeat_url %>/live/toppages/v3/?limit=50&apikey=<%= api_key %>&host=")
-    var chartbeat_string = chartbeat_template({
-      chartbeat_url: config.chartbeat_url,
-      api_key: config.api_key
-    });
-
-    var urls = [];
-    _.forEach(config.sites, function(site) {
-      urls.push(chartbeat_string + site);
-    });
 
     var articles = [];
-    var current = Promise.resolve();
-    Promise.map(urls, function(URL) {
-      current = current.then(function() {
-        return needle.getAsync(URL);
+    _.forEach(urls, Promise.coroutine(function* (url) {
+      var response = yield needle.getAsync(url);
+      _.forEach(response[1].pages, function(article) {
+        var art = parse_article(article);
+        if (art) articles.push(art);
       });
-      return current;
-    }).map(function(res) {
-      var articles = [];
-      //console.log(res[1]);
-      _.forEach(res[1].pages, function(article) {
-        if (helper.isSectionPage(article.path)) {
-          return;
-        }
-        articles.push({
-          path: article.path,
-          title: article.title,
-          visits: article.stats.visits
-        });
-      });
+    }));
 
-      return articles;
-    }).then(function(articles) {
-      articles =_.flatten(articles);
-
-      app.io.room('popular_co').broadcast('chartbeat', {
-          articles: articles.splice(0, 40)
-      });
-    }).then(function() {
-      console.log('All needle requests saved!')
-    }).catch(function(e) {
-      console.log(e);
+    app.io.room('popular_co').broadcast('chartbeat', {
+      articles: articles.splice(0, 40)
     });
 
     setTimeout(fetchData, 5000);
